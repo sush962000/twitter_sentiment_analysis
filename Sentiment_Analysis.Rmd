@@ -1,0 +1,244 @@
+---
+title: "State Happiness Analysis Using Twitter Data"
+author: "Susmita Ghose"
+date: "Monday, November 03, 2014"
+output: html_document
+---
+
+In this document, the happiness score that was obtained is analyzed and it's correlation to several demographic factors is studied.
+
+
+```{r}
+# First the table obtained is cleaned for downstream processing
+data<-read.table("./happiness.txt", sep = ",", )
+#data<-read.table("./op.txt", sep = ",")
+states<-character(dim(data)[2])
+happiness_score<-numeric(dim(data)[2])
+for(i in 1:dim(data)[2]) 
+{
+    dict<-strsplit(as.character(data[,i]), ":")
+    dict[[1]][1]<-sub("\\{", "", dict[[1]][1] )
+    dict[[1]][2]<-sub("\\}", "", dict[[1]][2])
+    states[i]<-as.character(dict[[1]][1])
+    happiness_score[i]<-as.numeric(dict[[1]][2])
+    states[i]<-gsub("^\\s+|\\s+$", "", states[i])
+    states[i]<-tolower(states[i])
+}
+
+happiness_data<-data.frame(states,happiness_score)
+happiness_data<-happiness_data[order(happiness_score),]
+
+```
+
+
+A geographical map of the happiness score is created. 
+```{r, echo=FALSE}
+suppressWarnings(suppressMessages(library(maps)))
+suppressWarnings(suppressMessages(library(ggplot2)))
+suppressWarnings(suppressMessages(library(maptools)))
+suppressWarnings(suppressMessages(library(sp)))
+#library(mapdata)
+suppressWarnings(suppressMessages(library(calibrate)))
+
+# get all the states from the map() and create the map/polygon objects
+map_USA <- map('state', fill = TRUE, plot=FALSE)
+state_names <- sapply(strsplit(map_USA$names,  ':'),  function(x)x[1])
+USA_polygons <- map2SpatialPolygons(map_USA,  IDs = state_names,  CRS('+proj=longlat'))
+
+# match the states to the happiness indices
+index <- match(unique(state_names),  happiness_data$states)
+happiness_score_data <- data.frame(value = (happiness_data$happiness_score)[index], state = unique(state_names))
+row.names(happiness_score_data) <- unique(state_names)
+# use spplot to draw the polygon objects
+USAsp <- SpatialPolygonsDataFrame(USA_polygons,  data = happiness_score_data)
+spplot(USAsp['value'], col.regions = gray(0:100/100), xlab = "Happiness map: states in lighter shades have higher average happiness score" ) # another color option is heat.colors(100)
+
+par(mfrow=c(1,1), mar= c(0, 10, 2, 0))
+barplot(happiness_data$happiness_score, names.arg=happiness_data$states, horiz=TRUE, 
+       las=1, cex.names=0.6, col=rainbow(20))
+```
+
+The data is then compared with census data to obtain several insights. Some of the factors considered include demographic factors such as population density, density of whites, African Americans, life expectancy, education and income statistics, poverty rate and crime statistics etc. Data for the analysis is obtained from different sources such as US Census, CDC, FBI, Wikipedia, kff.org, etc. The exact links for each of the data set is provided. 
+
+```{r}
+
+# Population density data is obtained from: http://en.wikipedia.org/wiki/List_of_U.S._states_by_population_density#Summary_of_density_by_region_showing_population_and_land_area
+
+pop_density = read.csv("./pop_data/pop_density.csv", header = FALSE)
+pop_density<-pop_density[, 1:2]
+names(pop_density)<- c("State", "pop_density_per_sq_mile")
+pop_density[,1]<-tolower(pop_density[,1])
+merged_data<-merge(happiness_data, pop_density, by.x="states", by.y = "State" )
+merged_data$happiness_score<-as.numeric(merged_data$happiness_score)
+merged_data$pop_density_per_sq_mile<-as.numeric(merged_data$pop_density_per_sq_mile)
+
+# Next set of demographic data is downloaded from https://www.census.gov/popest/data/state/asrh/2013/files/SCPRC-EST2013-18+POP-RES.csv
+pop_data<-read.csv("./pop_data/pop.csv")
+pop_data<-pop_data[, 5:8]
+pop_data[,1]<-tolower(pop_data[,1])
+names(pop_data)<-c("NAME", "pop_2013", "pop_greater_than_age_18", "perc_pop_greater_than_age_18")
+pop_data$pop_2013<-as.numeric(as.character(pop_data$pop_2013))
+pop_data$perc_pop_greater_than_age_18<-as.numeric(as.character(pop_data$perc_pop_greater_than_age_18))
+pop_data<-pop_data[, c(1,4)]
+merged_data<-merge(merged_data, pop_data, by.x="states", by.y = "NAME")
+merged_data<-merged_data[, -5]
+
+# The next set of data is obtained from http://factfinder2.census.gov/faces/tableservices/jsf/pages/productview.xhtml?src=bkmk
+dem_data<-read.csv("./pop_data/dem_data.csv")
+dem_data<-subset(dem_data, dem_data$Year.display.label == "April 1, 2010 Census" &
+                    dem_data$Sex.display.label=="Both Sexes" & Hisp.display.label=="Total")
+dem_data<-dem_data[-1,]
+dem_data<-dem_data[, c('GEO.display.label', 'totpop', 'wa', 'aa', 'ba') ]
+dem_data$perc_white<-100*as.numeric(as.character(dem_data$wa))/as.numeric(as.character(dem_data$totpop))
+dem_data$perc_asian<-100*as.numeric(as.character(dem_data$aa))/as.numeric(as.character(dem_data$totpop))
+dem_data<-dem_data[, c('GEO.display.label', 'perc_white', 'perc_asian')]
+dem_data$GEO.display.label<-tolower(dem_data$GEO.display.label)
+merged_data<-merge(merged_data, dem_data, by.x="states", by.y = "GEO.display.label")
+
+# Education data is obtained from: http://www.census.gov/compendia/statab/cats/education/educational_attainment.html
+suppressWarnings(suppressMessages(library(gdata)))
+edu_data<-read.xls("./pop_data/educational_attainment.xls", header=T, skip=4)
+edu_data<-edu_data[, c(1,20:22)] # most current information
+edu_data$X<-tolower(edu_data$X)
+names(edu_data)<-c("X", "perc_high_school_graduate_or_more", "perc_bachelors_degree_or_more", "perc_advanced_degree_or_more" )
+merged_data<-merge(merged_data, edu_data, by.x="states", by.y = "X")
+
+# Life Expectancy data is obtained from http://kff.org/other/state-indicator/life-expectancy/
+# Also verified at http://www.cdc.gov/nchs/fastats/life-expectancy.htm
+
+life_data<-read.csv("./pop_data/life_expectancy.csv", header=T, skip=3)
+life_data$Location<-tolower(life_data$Location)
+names(life_data)<-c("Location", "life_expectancy_at_birth_years")
+merged_data<-merge(merged_data, life_data, by.x="states", by.y = "Location")
+
+# Divorce data was obtained from http://www.census.gov/compendia/statab/cats/births_deaths_marriages_divorces/marriages_and_divorces.html
+divorce_data<-read.xls("./pop_data/marriages_divorces.xls", header=T, skip=6)
+divorce_data<-divorce_data[, c(1,33)] # most current information
+f<-function(x){sub(' \\\\[0-9]', "", x)}  # remove \\
+divorce_data$X<-sapply(divorce_data$X, f)
+divorce_data<-divorce_data[2:52,]
+divorce_data$X<-tolower(divorce_data$X)
+names(divorce_data)<-c("X", "divorce_rate_per_1000")
+divorce_data$divorce_rate_per_1000<-as.numeric(as.character(divorce_data$divorce_rate_per_1000))
+merged_data<-merge(merged_data, divorce_data, by.x="states", by.y = "X")
+
+# Poverty data: https://www.census.gov/hhes/www/poverty/data/incpovhlth/2013/tables.html
+poverty_data<-read.xls("./pop_data/poverty_rate.xls", header=T, skip=8)
+poverty_data<-poverty_data[,1:2]
+poverty_data<-poverty_data[2:52,]
+f<-function(x){gsub('\\.', "", x)}
+poverty_data$X<-sapply(poverty_data$X, f)
+poverty_data$X<-tolower(poverty_data$X)
+names(poverty_data)<-c("X", "perc_pop_in_poverty")
+merged_data<-merge(merged_data, poverty_data, by.x="states", by.y = "X")
+
+# Income data: https://www.census.gov/hhes/www/income/data/statemedian/
+income_data<-read.xls("./pop_data/median_income.xls", header=T)
+income_data$state<-tolower(income_data$state)
+income_data$median_income<-as.character(income_data$median_income)
+f<-function(x){sub(",", "", x)}
+income_data$median_income<-sapply(income_data$median_income, f)
+income_data$median_income<-as.numeric(income_data$median_income)/1000
+names(income_data)<-c("X", "income_thosands_of_dollars")
+merged_data<-merge(merged_data, income_data, by.x="states", by.y = "X")
+
+# Obesity data is obtained from http://www.cdc.gov/obesity/data/table-adults.html
+obesity_data<-read.table("./pop_data/obesity_percentage.txt", header=F, sep ='\t')
+obesity_data<-obesity_data[, 1:2]
+obesity_data$V1<-tolower(obesity_data$V1)
+names(obesity_data)<-c("state", "obesity_percentage")
+merged_data<-merge(merged_data, obesity_data, by.x="states", by.y = "state")
+
+# Labor statistics is obtained from http://www.census.gov/compendia/statab/cats/labor_force_employment_earnings/labor_force_status.html which gets the data from US Bureau of Labor Statistics
+labor_data<-read.xls("./pop_data/labor_force.xls", header=T, skip=4)
+labor_data<-labor_data[, c(1,4:5)]
+labor_data$Total<-as.character(labor_data$Total)
+f<-function(x){sub(",", "", x)}
+labor_data$Total<-sapply(labor_data$Total, f)
+labor_data$Female.1<-as.character(labor_data$Female.1)
+labor_data$Female.1<-sapply(labor_data$Female.1, f)
+labor_data$perc_women_in_labor_force<-100*as.numeric(labor_data$Female.1)/as.numeric(labor_data$Total)
+labor_data<-labor_data[2:53, c(1,4)]
+labor_data$X<-tolower(as.character(labor_data$X))
+labor_data$X<-gsub("^\\s+|\\s+$", "", labor_data$X)
+merged_data<-merge(merged_data, labor_data, by.x="states", by.y = "X")
+
+
+# Crime data is obtained from: http://www.fbi.gov/about-us/cjis/ucr/crime-in-the-u.s/2012/crime-in-the-u.s.-2012/resource-pages/download-printable-files
+crime_data<-read.xls("./pop_data/Table_4_Crime_in_the_United_States_by_Region_Geographic_Division_and_State_2011-2012.xls", header=T, skip=3)
+crime_data<-crime_data[crime_data$Year==2012,]
+crime_data<-crime_data[, c(1,5)]
+crime_data$Area<-tolower(crime_data$Area)
+names(crime_data)<-c("states", "crime_rate_per_100K")
+f<-function(x){sub(",", "", x)}
+crime_data$crime_rate_per_100K<-sapply(crime_data$crime_rate_per_100K, f)
+crime_data$crime_rate_per_100K<-as.numeric(as.character(crime_data$crime_rate_per_100K))
+crime_data$states<-gsub("^\\s+|\\s+$", "", crime_data$states)
+merged_data<-merge(merged_data, crime_data, by="states", by.y = "states")
+```
+Summarize the findings with a few plots and correlation of the demographic factors. 
+
+
+```{r, echo=FALSE}
+
+par(mfrow=c(1,2))
+
+# The first plot against life expectancy
+
+plot(merged_data$income_thosands_of_dollars, merged_data$happiness_score, pch=19, col=merged_data$states, xlab = "Income (Thousands of Dollars)", ylab= "Happiness Score")
+lm1<-lm(merged_data$happiness_score~merged_data$income_thosands_of_dollars)
+abline(lm1)
+loess1<-loess(merged_data$happiness_score ~ merged_data$income_thosands_of_dollars, span = 1)
+j <- order(merged_data$income_thosands_of_dollars)
+#lines(merged_data$income_thosands_of_dollars[j],loess1$fitted[j],col="red",lwd=1)
+
+
+# The second plot against crime rate
+plot(merged_data$crime_rate_per_100K , merged_data$happiness_score, pch=19, col=merged_data$states, xlab = "Crime Rate (Per 100K)", ylab= "Happiness Score")
+lm1<-lm(merged_data$happiness_score~merged_data$crime_rate_per_100K)
+abline(lm1)
+loess1<-loess(merged_data$happiness_score ~ merged_data$crime_rate_per_100K, span = 1)
+j <- order(merged_data$crime_rate_per_100K)
+#lines(merged_data$crime_rate_per_100K[j],loess1$fitted[j],col="red",lwd=1)
+
+
+par(mfrow=c(1,2))
+
+# The third plot against % of population with high school graduation or more
+plot(merged_data$perc_high_school_graduate_or_more, merged_data$happiness_score, pch=19, col=merged_data$states, xlab = "% Of Population With High School Degree", ylab= "Happiness Score")
+loess1<-loess(merged_data$happiness_score ~ merged_data$perc_high_school_graduate_or_more, span = 1)
+j <- order(merged_data$perc_high_school_graduate_or_more)
+lines(merged_data$perc_high_school_graduate_or_more[j],loess1$fitted[j],col="red",lwd=1)
+lm1<-lm(merged_data$happiness_score~merged_data$perc_high_school_graduate_or_more)
+abline(lm1)
+
+
+plot(merged_data$perc_women_in_labor_force, merged_data$happiness_score, pch=19, col=merged_data$states, xlab = "% Of Women In Labor Force", ylab= "Happiness Score")
+#textxy(mergedDemData$percAsian, mergedDemData$HI, mergedDemData$states)
+loess1<-loess(merged_data$happiness_score ~ merged_data$perc_women_in_labor_force, span = 1)
+j <- order(merged_data$perc_women_in_labor_force)
+lines(merged_data$perc_women_in_labor_force[j],loess1$fitted[j],col="red",lwd=1)
+lm1<-lm(merged_data$happiness_score~merged_data$perc_women_in_labor_force)
+abline(lm1)
+
+```
+
+```{r}
+happiness_value<-merged_data$happiness_score
+demographic_factors<-merged_data[, 3:dim(merged_data)[2]]
+corr<-function(x)(cor(happiness_value,x, use="pairwise"))
+corr_data<-data.frame(corr_value=t(corr(demographic_factors)), demographic_factors=names(demographic_factors))
+corr_data<-corr_data[order(corr_data$corr_value),] 
+par(mfrow=c(1,1), mar= c(4, 12, 4, 2))
+barplot(corr_data$corr_value, names.arg=toupper(corr_data$demographic_factors),horiz=TRUE, las=1, cex.names=0.6, col=rainbow(20))
+```
+
+This study has a few inherent limitations:
+
+1. The amount of Twitter data used for this analysis is not sufficient. Greater amounts of data spreading across several days/weeks should be used to obtain more meaningful results.
+
+2. As of January 2014, only 19% of online adults use Twitter (http://www.pewinternet.org/fact-sheets/social-networking-fact-sheet/) which is very low and hence the data may not be representative of the general population. Analysis should be rerun in later years the usage is much higher.
+
+3. Some of the demographic data sets are not current. (For example, the educational data is from 2009)
+
+
